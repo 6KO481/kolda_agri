@@ -1,0 +1,32 @@
+# ══════════════════════════════════════════════════
+#  KOLDA AGRI — requirements.txt
+#  Compatible : Python 3.10 / 3.11 / 3.12
+#  Plateforme : Streamlit Community Cloud
+# ══════════════════════════════════════════════════
+
+# ── Framework principal ────────────────────────────
+streamlit>=1.35.0
+
+# ── Données & calcul ───────────────────────────────
+pandas>=2.0.0
+openpyxl>=3.1.0          # lecture/écriture .xlsx (pd.read_excel)
+xlrd>=2.0.1               # lecture .xls anciens formats
+
+# ── Visualisation ──────────────────────────────────
+plotly>=5.20.0
+
+# ── Cartographie ───────────────────────────────────
+folium>=0.16.0
+streamlit-folium>=0.20.0
+
+# ── Utilitaires stdlib (déjà inclus dans Python) ──
+# sqlite3      → inclus dans Python standard
+# pathlib      → inclus dans Python standard
+# re           → inclus dans Python standard
+# unicodedata  → inclus dans Python standard
+# json         → inclus dans Python standard
+# urllib       → inclus dans Python standard
+# contextlib   → inclus dans Python standard
+# datetime     → inclus dans Python standard
+# tempfile     → inclus dans Python standard
+# argparse     → inclus dans Python standard
