@@ -38,9 +38,6 @@ LIGNES_A_IGNORER = [
     'resultats', 'ecart', 'moyenne', 'source',
     'sodagri', 'contre-saison', 'amenage', 'nan',
 ]
-# NB : 'region' et 'total' sont intentionnellement absents de cette liste.
-# La feuille KOLDA contient des sous-totaux "TOTAL CEREALES" ; on les
-# filtrera séparément.
 
 CULTURES_CEREALES      = ['MIL', 'SORGHO', 'MAIS', 'RIZ', 'FONIO']
 CULTURES_INDUSTRIELLES = ['ARACHIDE', 'ARACHIDE HUILERIE', 'COTON',
@@ -217,6 +214,7 @@ def trouver_structure(df_raw: pd.DataFrame) -> tuple[int, dict, str]:
 
     raise ValueError("Structure non reconnue (ni format A ni format B)")
 
+
 # ── Validation d'une ligne localité ──────────────────────────
 
 def est_localite_valide(nom) -> bool:
@@ -274,11 +272,6 @@ def parser_feuille(
             cultures_cols[culture] = {}
         cultures_cols[culture][info['metrique']] = col_idx
 
-    # Le niveau ('region' ou 'localite') est déterminé par l'en-tête de la
-    # première colonne, détecté dans trouver_structure.
-    # Règle : 'region' seulement si l'en-tête dit explicitement "REGION(S)" ;
-    # tout autre en-tête (DEPARTEMENTS, LOCALITES…) → 'localite'.
-
     rows = []
     for idx in range(data_start, len(df_raw)):
         row        = df_raw.iloc[idx]
@@ -289,13 +282,10 @@ def parser_feuille(
             continue
 
         for culture, cols in cultures_cols.items():
-            # ── Superficie & rendement ─────────────────────
             sup  = clean_numeric(row.iloc[cols['SUP']])  if 'SUP'  in cols else None
             rdt  = clean_numeric(row.iloc[cols['RDT']])  if 'RDT'  in cols else None
 
-            # ── Production ────────────────────────────────
-            # Si la cellule contient une formule Excel ou est None/vide,
-            # on calcule à partir de sup × rdt / 1000.
+            # Production : si cellule contient formule ou est vide, on calcule sup * rdt / 1000
             prod_raw  = row.iloc[cols['PROD']] if 'PROD' in cols else None
             prod_val  = clean_numeric(prod_raw)
 
@@ -329,39 +319,114 @@ def parser_feuille(
     return rows
 
 
-# ── Résolution localite_id ────────────────────────────────────
+# ── Résolution localite_id (CORRIGÉE) ────────────────────────
 
 def resoudre_localite_id(
     conn: sqlite3.Connection,
     nom_localite: str,
+    type_attendu: str = None,
 ) -> Optional[str]:
-    """Trouve le geo_id par nom standardisé (exact puis partiel)."""
+    """
+    Trouve le geo_id d'une localité en donnant la priorité aux types non-région.
+    Si type_attendu est fourni, on filtre sur ce type.
+    """
     nom_clean = clean_text(nom_localite, lower=True, remove_accents=True)
     if not nom_clean:
         return None
 
-    row = conn.execute(
-        "SELECT geo_id FROM localites WHERE nom_standardise = ? LIMIT 1",
-        (nom_clean,),
-    ).fetchone()
-    if row:
-        return row['geo_id']
+    # 1. Exact sur nom_standardise
+    if type_attendu:
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE nom_standardise = ? AND type = ? LIMIT 1",
+            (nom_clean, type_attendu),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+    else:
+        # Priorité aux types non-région
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE nom_standardise = ? AND type != 'region' LIMIT 1",
+            (nom_clean,),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE nom_standardise = ? LIMIT 1",
+            (nom_clean,),
+        ).fetchone()
+        if row:
+            return row['geo_id']
 
-    row = conn.execute(
-        "SELECT geo_id FROM localites WHERE nom_standardise LIKE ? LIMIT 1",
-        (f"%{nom_clean}%",),
-    ).fetchone()
-    if row:
-        return row['geo_id']
+    # 2. LIKE sur nom_standardise
+    if type_attendu:
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE nom_standardise LIKE ? AND type = ? LIMIT 1",
+            (f"%{nom_clean}%", type_attendu),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+    else:
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE nom_standardise LIKE ? AND type != 'region' LIMIT 1",
+            (f"%{nom_clean}%",),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE nom_standardise LIKE ? LIMIT 1",
+            (f"%{nom_clean}%",),
+        ).fetchone()
+        if row:
+            return row['geo_id']
 
-    row = conn.execute(
-        "SELECT geo_id FROM localites WHERE LOWER(nom) LIKE ? LIMIT 1",
-        (f"%{nom_clean}%",),
-    ).fetchone()
-    return row['geo_id'] if row else None
+    # 3. Exact sur nom (non standardisé)
+    if type_attendu:
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE LOWER(nom) = ? AND type = ? LIMIT 1",
+            (nom_clean, type_attendu),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+    else:
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE LOWER(nom) = ? AND type != 'region' LIMIT 1",
+            (nom_clean,),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE LOWER(nom) = ? LIMIT 1",
+            (nom_clean,),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+
+    # 4. LIKE sur nom
+    if type_attendu:
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE LOWER(nom) LIKE ? AND type = ? LIMIT 1",
+            (f"%{nom_clean}%", type_attendu),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+    else:
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE LOWER(nom) LIKE ? AND type != 'region' LIMIT 1",
+            (f"%{nom_clean}%",),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+        row = conn.execute(
+            "SELECT geo_id FROM localites WHERE LOWER(nom) LIKE ? LIMIT 1",
+            (f"%{nom_clean}%",),
+        ).fetchone()
+        if row:
+            return row['geo_id']
+
+    return None
 
 
-# ── Import principal ──────────────────────────────────────────
+# ── Import principal (production) ────────────────────────────
 
 def importer_fichier_production(
     fichier_excel: str | Path,
@@ -392,7 +457,7 @@ def importer_fichier_production(
     # 1. Charger toutes les feuilles sans en-tête
     feuilles = pd.read_excel(fichier_excel, sheet_name=None, header=None)
 
-    # 2. Détecter les années (contenu d'abord, puis nom du fichier)
+    # 2. Détecter les années
     annee_debut = annee_fin = None
     for nom_f, df_raw in feuilles.items():
         try:
@@ -446,10 +511,12 @@ def importer_fichier_production(
                 continue
 
             for row in rows:
-                localite_id = resoudre_localite_id(conn, row['localite_nom'])
+                # On transmet type_attendu='region' si le niveau détecté est 'region'
+                type_att = 'region' if row['niveau'] == 'region' else None
+                localite_id = resoudre_localite_id(conn, row['localite_nom'], type_attendu=type_att)
                 if localite_id is None:
                     stats['erreurs'].append(
-                        f"Localité non résolue : '{row['localite_nom']}'"
+                        f"Localité non résolue : '{row['localite_nom']}' (niveau={row['niveau']})"
                     )
                     continue
 
@@ -497,7 +564,7 @@ def importer_fichier_production(
     return stats
 
 
-# ── Import magasins ───────────────────────────────────────────
+# ── Import magasins (CORRIGÉ) ─────────────────────────────────
 
 def importer_fichier_magasins(
     fichier_excel: str | Path,
@@ -558,9 +625,34 @@ def importer_fichier_magasins(
             if etat_clean not in ('Bon', 'Mauvais', 'En construction'):
                 etat_clean = 'Inconnu'
 
-            localite_id = resoudre_localite_id(conn, village)
-            if not localite_id:
+            # Résolution du localite_id en cascade
+            localite_id = None
+            if village and village.strip():
+                localite_id = resoudre_localite_id(conn, village)
+            if not localite_id and commune and commune.strip():
                 localite_id = resoudre_localite_id(conn, commune)
+            if not localite_id and dept and dept.strip():
+                # Recherche par nom ou abréviation dans les départements
+                dept_clean = clean_text(dept, lower=True, remove_accents=True)
+                if dept_clean:
+                    row_dept = conn.execute(
+                        "SELECT geo_id FROM localites WHERE type='departement' AND (LOWER(nom) = ? OR LOWER(abreviation) = ?) LIMIT 1",
+                        (dept_clean, dept_clean)
+                    ).fetchone()
+                    if row_dept:
+                        localite_id = row_dept['geo_id']
+                # Fallback : recherche par LIKE
+                if not localite_id and dept_clean:
+                    row_dept = conn.execute(
+                        "SELECT geo_id FROM localites WHERE type='departement' AND LOWER(nom) LIKE ? LIMIT 1",
+                        (f"%{dept_clean}%",)
+                    ).fetchone()
+                    if row_dept:
+                        localite_id = row_dept['geo_id']
+
+            if not localite_id:
+                stats['erreurs'].append(f"Localité non résolue pour magasin : village={village}, commune={commune}, dept={dept}")
+                continue
 
             conn.execute(
                 """INSERT OR IGNORE INTO magasins
