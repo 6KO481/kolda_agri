@@ -46,7 +46,7 @@ except ImportError:
 
 
 # ══════════════════════════════════════════════════════════════
-# CONFIG HARDCODÉE (sans Configuration.py)
+# CONFIG (couleurs & UI — sans tokens sensibles)
 # ══════════════════════════════════════════════════════════════
 
 CFG = {
@@ -68,10 +68,19 @@ CFG = {
     # Onglets identiques à Carte.py
     "tab_active":    "#3fb950",
     "subtab_active": "#58a6ff",
-    # API tokens
-    "hf_token":      "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",
-    "groq_token":    "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",
 }
+
+# ── Accès sécurisé aux secrets (Streamlit Cloud ou .streamlit/secrets.toml) ──
+def _secret(key: str, fallback: str = "") -> str:
+    """Lit un secret depuis st.secrets (Streamlit Cloud / secrets.toml).
+    En développement local, créez .streamlit/secrets.toml avec :
+        hf_token    = "hf_..."
+        groq_token  = "gsk_..."
+    """
+    try:
+        return st.secrets[key]
+    except Exception:
+        return fallback
 
 SESSIONS_DIR = ROOT / "chat_sessions"
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -341,10 +350,10 @@ def call_llm(messages: list, max_tokens: int = 1024, temperature: float = 0.3) -
     try:
         if provider == "groq":
             url     = "https://api.groq.com/openai/v1/chat/completions"
-            api_key = CFG["groq_token"]
+            api_key = _secret("groq_token")
         else:  # hf
             url     = f"https://router.huggingface.co/v1/chat/completions"
-            api_key = CFG["hf_token"]
+            api_key = _secret("hf_token")
 
         req = urllib.request.Request(url, data=payload, headers={
             "Authorization": f"Bearer {api_key}",
@@ -371,27 +380,49 @@ def call_llm(messages: list, max_tokens: int = 1024, temperature: float = 0.3) -
 # ══════════════════════════════════════════════════════════════
 
 def generate_image(prompt: str) -> tuple:
-    """Retourne (message_str, bytes | None)."""
+    """Retourne (message_str, bytes | None) — via FLUX.2-klein-9B (Gradio)."""
     try:
-        import urllib.request
-        payload = json.dumps({
-            "inputs": prompt,
-        }).encode("utf-8")
-        url = f"https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
-        req = urllib.request.Request(url, data=payload, headers={
-            "Authorization": f"Bearer {CFG['hf_token']}",
-            "Content-Type":  "application/json",
-        })
-        with urllib.request.urlopen(req, timeout=45) as r:
-            img_bytes = r.read()
-        # Vérifier que c'est bien une image
-        if img_bytes[:4] in (b'\x89PNG', b'\xff\xd8\xff') or img_bytes[:4] == b'RIFF':
+        from gradio_client import Client
+        client = Client(
+            "black-forest-labs/FLUX.2-klein-9B",
+            hf_token=_secret("hf_token"),
+        )
+        result = client.predict(
+            prompt=prompt,
+            input_images=[],
+            mode_choice="Distilled (4 steps)",
+            seed=0,
+            randomize_seed=True,
+            width=1024,
+            height=1024,
+            num_inference_steps=4,
+            guidance_scale=1,
+            prompt_upsampling=False,
+            api_name="/generate",
+        )
+        # result = (image_dict, seed)
+        img_info = result[0] if isinstance(result, (list, tuple)) else result
+        img_bytes = None
+        if isinstance(img_info, dict):
+            img_path = img_info.get("path")
+            img_url  = img_info.get("url")
+            if img_path and os.path.exists(img_path):
+                with open(img_path, "rb") as f:
+                    img_bytes = f.read()
+            elif img_url:
+                import urllib.request as _ur
+                with _ur.urlopen(img_url, timeout=30) as r:
+                    img_bytes = r.read()
+        elif isinstance(img_info, str) and os.path.exists(img_info):
+            with open(img_info, "rb") as f:
+                img_bytes = f.read()
+        if img_bytes:
             return "✅ Image générée.", img_bytes
-        # Sinon c'est probablement une erreur JSON
-        err = json.loads(img_bytes).get("error", "Erreur inconnue")
-        return f"⚠️ Génération image : {err}", None
+        return "⚠️ Image générée mais fichier introuvable.", None
+    except ImportError:
+        return "⚠️ `gradio_client` non installé. Lancez : `pip install gradio_client`", None
     except Exception as e:
-        return f"⚠️ Génération image indisponible : {str(e)[:120]}", None
+        return f"⚠️ Génération image indisponible : {str(e)[:180]}", None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -970,7 +1001,8 @@ Question: "génère une image de champ de mil"
 2. Pour toute donnée chiffrée → utiliser [SQL:...] ou [SUMMARY:...]
 3. Jamais montrer une requête SQL brute sans utiliser la commande [SQL:...]
 4. Réponses concises et professionnelles
-5. Si une question n'est pas liée à l'agriculture/Kolda → répondre poliment que tu es spécialisé sur ce domaine"""
+5. Si une question n'est pas liée à l'agriculture/Kolda → répondre poliment que tu es spécialisé sur ce domaine
+6. Pour les demandes de génération d'image [IMAGE_GEN:], tu peux générer TOUTE image demandée (chat, paysage, animal, etc.) — pas de restriction de sujet pour les images"""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -986,6 +1018,51 @@ def save_session(msgs: list) -> str:
         json.dump({"title":first,"saved_at":datetime.now().isoformat(),"messages":msgs},
                   f, ensure_ascii=False, indent=2)
     return path.name
+
+
+def auto_save_session():
+    """Sauvegarde automatique après chaque échange — inclut textes ET médias."""
+    import base64
+    msgs = st.session_state.chat_history
+    if not msgs:
+        return
+    first   = next((m["content"][:50] for m in msgs if m["role"] == "user"), "Conversation")
+    current = st.session_state.get("current_session_path")
+    if current and Path(current).exists():
+        path = Path(current)
+    else:
+        ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = re.sub(r'[^\w\-]', '_', first[:38])
+        path = SESSIONS_DIR / f"{ts}_{slug}.json"
+        st.session_state["current_session_path"] = str(path)
+
+    # ── Sérialiser les images (bytes → base64) ──
+    images_serial = {}
+    for idx, pairs in st.session_state.get("chat_images", {}).items():
+        images_serial[str(idx)] = [
+            [label, base64.b64encode(img_bytes).decode("utf-8")]
+            for label, img_bytes in pairs
+        ]
+
+    # ── Sérialiser les figures Plotly (→ JSON string) ──
+    figures_serial = {}
+    if PLOTLY_OK:
+        for idx, figs in st.session_state.get("chat_figures", {}).items():
+            try:
+                figures_serial[str(idx)] = [fig.to_json() for fig in figs]
+            except Exception:
+                pass
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({
+            "title":    first,
+            "saved_at": datetime.now().isoformat(),
+            "messages": msgs,
+            "media": {
+                "images":  images_serial,
+                "figures": figures_serial,
+            },
+        }, f, ensure_ascii=False, indent=2)
 
 
 def list_sessions() -> list:
@@ -1035,26 +1112,40 @@ def render_messages():
 def tab_historique():
     c        = CFG
     sessions = list_sessions()
+
+    # ── Bouton Nouvelle conversation ──
+    if st.button("✏️ Nouvelle conversation", use_container_width=True):
+        for k in ["chat_history","chat_figures","chat_images","rapport_bytes_for","wizard"]:
+            st.session_state[k] = {} if k != "chat_history" else []
+        st.session_state["current_session_path"] = None
+        st.rerun()
+
+    st.divider()
+
     if not sessions:
         st.markdown(f"""
 <div style='text-align:center;padding:52px 0;color:{c["text_muted"]};'>
   <div style='font-size:2.8rem;margin-bottom:14px;'>🗂️</div>
   <p style='font-size:.88rem;'>Aucune conversation sauvegardée.<br>
-  Dans l'onglet Chat, cliquez <strong>💾 Sauvegarder</strong>.</p>
+  Les conversations sont sauvegardées automatiquement.</p>
 </div>""", unsafe_allow_html=True)
         return
 
     st.markdown(
         f"<p style='color:{c['text_secondary']};font-size:.83rem;margin:0 0 10px;'>"
-        f"{len(sessions)} conversation(s)</p>", unsafe_allow_html=True)
+        f"{len(sessions)} conversation(s) — sauvegarde automatique activée ✅</p>", unsafe_allow_html=True)
 
     for sess in sessions:
         saved = sess["saved_at"][:16].replace("T"," ") if sess["saved_at"] else "—"
+        # Marquer la session active
+        is_active = (st.session_state.get("current_session_path") == str(sess["path"]))
+        border = c["accent"] if is_active else c["border"]
         col1, col2, col3 = st.columns([5.5, 1.2, 0.9])
         with col1:
+            active_badge = " <span style='color:#3fb950;font-size:.70rem;'>● active</span>" if is_active else ""
             st.markdown(f"""
-<div class='sess-card'>
-  <div style='font-weight:500;color:{c["text_primary"]};font-size:.86rem;'>{sess["title"]}</div>
+<div class='sess-card' style='border-color:{border};'>
+  <div style='font-weight:500;color:{c["text_primary"]};font-size:.86rem;'>{sess["title"]}{active_badge}</div>
   <div style='color:{c["text_muted"]};font-size:.73rem;margin-top:3px;'>
     💬 {sess["nb"]} msgs &nbsp;·&nbsp; 📅 {saved}
   </div>
@@ -1062,19 +1153,44 @@ def tab_historique():
         with col2:
             if st.button("📂", key=f"ld_{sess['path'].name}", use_container_width=True,
                          help="Charger cette conversation"):
+                import base64 as _b64
+                import plotly.io as _pio
                 with open(sess["path"], encoding="utf-8") as f:
                     d = json.load(f)
-                st.session_state.chat_history      = d.get("messages",[])
-                st.session_state.chat_figures      = {}
-                st.session_state.chat_images       = {}
-                st.session_state.rapport_bytes_for = {}
-                st.session_state.wizard            = {}
+                st.session_state.chat_history          = d.get("messages", [])
+                st.session_state.wizard                = {}
+                st.session_state.rapport_bytes_for     = {}
+                st.session_state["current_session_path"] = str(sess["path"])
+
+                # ── Restaurer les images ──
+                chat_images = {}
+                for idx_str, pairs in d.get("media", {}).get("images", {}).items():
+                    chat_images[int(idx_str)] = [
+                        (label, _b64.b64decode(b64)) for label, b64 in pairs
+                    ]
+                st.session_state.chat_images = chat_images
+
+                # ── Restaurer les figures Plotly ──
+                chat_figures = {}
+                if PLOTLY_OK:
+                    for idx_str, fig_jsons in d.get("media", {}).get("figures", {}).items():
+                        try:
+                            chat_figures[int(idx_str)] = [
+                                _pio.from_json(fj) for fj in fig_jsons
+                            ]
+                        except Exception:
+                            pass
+                st.session_state.chat_figures = chat_figures
+
                 st.success(f"✅ Chargé : {sess['title'][:40]} — allez dans Chat")
                 time.sleep(1)
                 st.rerun()
         with col3:
             if st.button("🗑️", key=f"dl_{sess['path'].name}", use_container_width=True,
                          help="Supprimer"):
+                # Si c'est la session active, réinitialiser
+                if st.session_state.get("current_session_path") == str(sess["path"]):
+                    st.session_state["current_session_path"] = None
                 sess["path"].unlink(missing_ok=True)
                 st.rerun()
 
@@ -1082,6 +1198,7 @@ def tab_historique():
     if st.button("🗑️ Tout supprimer", use_container_width=False):
         for s in sessions:
             s["path"].unlink(missing_ok=True)
+        st.session_state["current_session_path"] = None
         st.rerun()
 
 
@@ -1158,7 +1275,7 @@ def tab_modele():
     sel_info = MODELS_CATALOGUE.get(current, {})
     prov     = sel_info.get("provider", "?")
     mid      = sel_info.get("model_id", "?")
-    token_val = CFG["groq_token"][:12] + "…" if prov == "groq" else CFG["hf_token"][:12] + "…"
+    token_val = _secret("groq_token")[:12] + "…" if prov == "groq" else _secret("hf_token")[:12] + "…"
     st.markdown(f"""
 <div style='background:{c["surface_alt"]};border:1px solid {c["border"]};border-radius:8px;
             padding:10px 14px;font-size:.78rem;color:{c["text_muted"]};'>
@@ -1207,15 +1324,16 @@ def main():
 
     # ── Init session state ──
     for k, v in {
-        "chat_history":      [],
-        "chat_figures":      {},
-        "chat_images":       {},
-        "rapport_bytes_for": {},
-        "wizard":            {},
-        "upload_pending":    None,
-        "show_upload":       False,
-        "uploaded_df":       None,
-        "selected_model":    DEFAULT_MODEL_KEY,
+        "chat_history":         [],
+        "chat_figures":         {},
+        "chat_images":          {},
+        "rapport_bytes_for":    {},
+        "wizard":               {},
+        "upload_pending":       None,
+        "show_upload":          False,
+        "uploaded_df":          None,
+        "selected_model":       DEFAULT_MODEL_KEY,
+        "current_session_path": None,
     }.items():
         if k not in st.session_state:
             st.session_state[k] = v
@@ -1241,21 +1359,11 @@ def main():
         )
 
         # ── Barre d'actions compacte ──
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2 = st.columns(2)
         with c1:
-            if st.button("🗑️ Vider", use_container_width=True):
-                for k in ["chat_history","chat_figures","chat_images","rapport_bytes_for","wizard"]:
-                    st.session_state[k] = {} if k != "chat_history" else []
-                st.rerun()
-        with c2:
-            if st.button("💾 Sauvegarder", use_container_width=True,
-                         disabled=not st.session_state.chat_history):
-                name = save_session(st.session_state.chat_history)
-                st.success(f"✅ {name[:45]}")
-        with c3:
             if st.button("📎 Fichier", use_container_width=True):
                 st.session_state.show_upload = not st.session_state.show_upload
-        with c4:
+        with c2:
             # Dernier rapport généré
             last = next(
                 (st.session_state.rapport_bytes_for[i]
@@ -1382,6 +1490,7 @@ def main():
                         opt = " *(optionnel — tapez `-` pour ignorer)*" if not nq.get("req") else ""
                         bot = f"*Reçu.* ➡️ **{nq['q']}**{opt}"
                         st.session_state.chat_history.append({"role":"assistant","content":bot})
+                auto_save_session()
                 st.rerun()
                 return
 
@@ -1431,6 +1540,7 @@ def main():
                              f"**{nq['q']}**")
                     st.session_state.chat_history.append({"role":"assistant","content":intro})
 
+            auto_save_session()
             st.rerun()
 
     # ══════════════════════════════════════════════════

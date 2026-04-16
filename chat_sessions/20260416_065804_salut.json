@@ -1,0 +1,15 @@
+{
+  "title": "salut",
+  "saved_at": "2026-04-16T06:58:05.269354",
+  "messages": [
+    {
+      "role": "user",
+      "content": "salut",
+      "attachments": []
+    },
+    {
+      "role": "assistant",
+      "content": "🔑 **Clé API invalide ou expirée.** Vérifiez votre token dans l'onglet ⚙️ Modèle."
+    }
+  ]
+}
