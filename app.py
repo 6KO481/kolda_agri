@@ -50,7 +50,8 @@ with st.sidebar:
         "Dashboard": "📈 Dashboard Avancées",
         "Meteo": "🌤️ Météo & Climat",
         "Carte": " Cartes",
-        "Configuration": "❓ Configuration"
+        "Configuration": "❓ Configuration",
+        "Chatbot": "🤖 Chatbot"
     }
     
     for page_key, page_label in views.items():
@@ -117,6 +118,15 @@ elif page == "Carte":
         st.error(f"Erreur: {e}")
         st.title("📊 Statistiques Avancées")
         st.info("Page des Statistiques Avancées")
+
+elif page == "Chatbot":
+    try:
+        import views.Chatbot
+        views.Chatbot.main()
+    except ImportError as e:
+        st.error(f"Erreur: {e}")
+        st.title("erreur de chargement")
+        st.info("Page de l'asistant IA")
 
     
 elif page == "Configuration":
