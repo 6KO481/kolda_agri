@@ -117,10 +117,6 @@ def apply_theme():
         padding-left: 1.2rem !important; padding-right: 1.2rem !important;
     }}
     header[data-testid="stHeader"] {{ height: 0 !important; overflow: hidden !important; }}
-    /* Masquer sidebar */
-    [data-testid="stSidebar"],
-    [data-testid="collapsedControl"],
-    section[data-testid="stSidebarContent"] {{ display: none !important; }}
 
     /* Onglets principaux — identique Carte.py */
     [data-baseweb="tab-list"] {{
@@ -262,16 +258,16 @@ def render_header():
 MODELS_CATALOGUE = {
     # ── Groq (rapide, gratuit avec clé) ──
     "groq:llama-3.3-70b": {
-        "label":    "🟣 Groq — LLaMA 3.3 70B",
+        "label":    "🟣 Groq — LLaMA 3.3 70B ⭐ (recommandé)",
         "provider": "groq",
         "model_id": "llama-3.3-70b-versatile",
-        "note":     "Très rapide · Excellent suivi d'instructions",
+        "note":     "Très rapide · Excellent suivi d'instructions · Recommandé",
     },
-    "groq:mixtral-8x7b": {
-        "label":    "🟣 Groq — Mixtral 8x7B",
+    "groq:llama-3.1-8b": {
+        "label":    "🟣 Groq — LLaMA 3.1 8B (rapide)",
         "provider": "groq",
-        "model_id": "mixtral-8x7b-32768",
-        "note":     "Rapide · Bon en français",
+        "model_id": "llama-3.1-8b-instant",
+        "note":     "Très rapide · Léger · Bon pour les tâches simples",
     },
     "groq:qwen-qwq-32b": {
         "label":    "🟣 Groq — Qwen QwQ 32B (raisonnement)",
@@ -317,18 +313,21 @@ DEFAULT_MODEL_KEY = "groq:llama-3.3-70b"
 def _llm_error(s: str) -> str:
     if "401" in s or "invalid_api_key" in s.lower() or "unauthorized" in s.lower():
         return "🔑 **Clé API invalide ou expirée.** Vérifiez votre token dans l'onglet ⚙️ Modèle."
+    if "403" in s or "forbidden" in s.lower():
+        return "🚫 **Erreur API :** `HTTP Error 403: Forbidden` — limites atteintes pour le moment. Réessayez plus tard ou changez de modèle dans ⚙️ Modèle."
     if "429" in s or "rate_limit" in s.lower() or "too many" in s.lower():
-        return "⏱️ **Quota dépassé.** Attendez quelques secondes et réessayez."
+        return "⏱️ **Quota dépassé — limites atteintes pour le moment.** Attendez quelques secondes et réessayez."
     if "503" in s or "loading" in s.lower():
         return "⏳ **Modèle en cours de chargement (HF).** Réessayez dans 20–30 secondes."
     if "timeout" in s.lower():
         return "⌛ **Délai dépassé.** Le modèle est surchargé, réessayez."
-    return f"❌ **Erreur API :** `{s[:220]}`"
+    return f"❌ **Erreur API :** `{s[:220]}` — limites atteintes pour le moment."
 
 
 def call_llm(messages: list, max_tokens: int = 1024, temperature: float = 0.3) -> str:
     """Appelle le LLM sélectionné dans l'onglet Modèle."""
     import urllib.request
+    import urllib.error
 
     model_key = st.session_state.get("selected_model", DEFAULT_MODEL_KEY)
     cfg_model  = MODELS_CATALOGUE.get(model_key, MODELS_CATALOGUE[DEFAULT_MODEL_KEY])
@@ -352,15 +351,23 @@ def call_llm(messages: list, max_tokens: int = 1024, temperature: float = 0.3) -
             url     = "https://api.groq.com/openai/v1/chat/completions"
             api_key = _secret("groq_token")
         else:  # hf
-            url     = f"https://router.huggingface.co/v1/chat/completions"
+            url     = "https://router.huggingface.co/v1/chat/completions"
             api_key = _secret("hf_token")
 
         req = urllib.request.Request(url, data=payload, headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type":  "application/json",
         })
-        with urllib.request.urlopen(req, timeout=60) as r:
-            result = json.loads(r.read())
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                result = json.loads(r.read())
+        except urllib.error.HTTPError as http_err:
+            # Lire le corps de l'erreur pour plus de détails
+            try:
+                err_body = http_err.read().decode("utf-8", errors="replace")[:300]
+            except Exception:
+                err_body = ""
+            return _llm_error(f"HTTP Error {http_err.code}: {http_err.reason} {err_body}")
 
         # Format OpenAI : choices[0].message.content
         choices = result.get("choices", [])
